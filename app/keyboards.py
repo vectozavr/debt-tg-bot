@@ -8,9 +8,21 @@ from app.utils import SUPPORTED_CURRENCIES
 
 MAIN_MENU_BUTTONS = (
     "Баланс",
-    "Отправить",
+    "Добавить трату",
     "История",
-    "Получить",
+    "Отправить",
+)
+
+DESCRIPTION_CATEGORY_BUTTONS = (
+    "Еда",
+    "Транспорт",
+    "Продукты",
+    "Дом",
+    "Развлечения",
+    "Подарок",
+    "Папачка",
+    "Другое",
+    "Без описания",
 )
 
 
@@ -38,6 +50,15 @@ def pending_transaction_keyboard(tx_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="Отклонить", callback_data=f"tx:reject:{tx_id}"),
     )
     return builder.as_markup()
+
+
+def description_keyboard() -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    for title in DESCRIPTION_CATEGORY_BUTTONS:
+        builder.add(KeyboardButton(text=title))
+    builder.adjust(3, 3, 2, 1)
+    builder.row(KeyboardButton(text="/cancel"))
+    return builder.as_markup(resize_keyboard=True)
 
 
 def draft_confirmation_keyboard(action: str) -> InlineKeyboardMarkup:
@@ -68,4 +89,15 @@ def switch_pair_keyboard(pairs, current_pair_id: int | None) -> InlineKeyboardMa
                 callback_data=f"pair:switch:{pair['id']}",
             )
         )
+    return builder.as_markup()
+
+
+def trust_keyboard(pair_id: int, current_enabled: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    yes_text = "Да" + (" •" if current_enabled else "")
+    no_text = "Нет" + ("" if current_enabled else " •")
+    builder.row(
+        InlineKeyboardButton(text=yes_text, callback_data=f"trust:set:{pair_id}:yes"),
+        InlineKeyboardButton(text=no_text, callback_data=f"trust:set:{pair_id}:no"),
+    )
     return builder.as_markup()

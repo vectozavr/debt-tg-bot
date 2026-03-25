@@ -6,9 +6,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
-from app.keyboards import currency_keyboard, draft_confirmation_keyboard, main_menu_keyboard, pending_transaction_keyboard
+from app.keyboards import (
+    description_keyboard,
+    draft_confirmation_keyboard,
+    main_menu_keyboard,
+    pending_transaction_keyboard,
+)
 from app.services import ServiceContainer
-from app.utils import format_minor_amount, parse_amount_to_minor, validate_currency
+from app.utils import format_minor_amount, parse_amount_to_minor
 
 router = Router()
 
@@ -16,23 +21,31 @@ router = Router()
 class ExpenseStates(StatesGroup):
     waiting_for_amount = State()
     waiting_for_description = State()
-    waiting_for_currency = State()
 
 
-def _draft_preview(data: dict[str, str | int], recipient_name: str, flow: str) -> str:
-    if flow == "send":
+def _draft_preview(
+    data: dict[str, str | int | bool],
+    recipient_name: str,
+    currency: str,
+) -> str:
+    resolved_flow = str(data["resolved_flow"])
+    if resolved_flow == "send":
         title = "Проверьте отправку:"
         recipient_line = f"Кому уйдут деньги: {recipient_name}"
     else:
-        title = "Проверьте запрос на получение:"
+        title = "Проверьте запрос на трату:"
         recipient_line = f"Кому уйдет запрос: {recipient_name}"
 
-    return (
-        f"{title}\n"
-        f"{recipient_line}\n"
-        f"Сумма: {format_minor_amount(int(data['amount_minor']), str(data['currency']))}\n"
-        f"Описание: {data['description']}"
-    )
+    lines = [
+        title,
+        recipient_line,
+        f"Сумма: {format_minor_amount(int(data['amount_minor']), currency)}",
+        f"Описание: {data['description'] or 'Без описания'}",
+    ]
+    if data.get("converted_from_negative"):
+        lines.append("")
+        lines.append("Итог выражения оказался отрицательным, поэтому операция будет оформлена как отправка денег.")
+    return "\n".join(lines)
 
 
 async def _start_expense_flow(
@@ -46,15 +59,22 @@ async def _start_expense_flow(
     pair = await services.pairs.get_selected_pair_for_user(user["id"])
     if not pair:
         await message.answer(
-            "Нельзя добавить расход без выбранной пары. Используйте /pair, /join или /switch.",
+            "Нельзя создать операцию без выбранной пары. Используйте /pair, /join или /switch.",
             reply_markup=main_menu_keyboard(),
         )
         return
 
+    currency = services.users.get_default_currency(user)
     await state.clear()
     await state.update_data(flow=flow)
     await state.set_state(ExpenseStates.waiting_for_amount)
-    await message.answer("Введите сумму, например: 25.50", reply_markup=main_menu_keyboard())
+    await message.answer(
+        (
+            f"Введите сумму в {currency}, например: 25.50\n"
+            "Можно использовать математику: 35/2 + 12 - 5"
+        ),
+        reply_markup=main_menu_keyboard(),
+    )
 
 
 @router.message(Command("send"))
@@ -64,46 +84,55 @@ async def start_send_money(message: Message, state: FSMContext, services: Servic
 
 
 @router.message(Command(commands=["recieve", "receive"]))
-@router.message(F.text == "Получить")
 @router.message(F.text == "Добавить трату")
+@router.message(F.text == "Получить")
 async def start_receive_money(message: Message, state: FSMContext, services: ServiceContainer) -> None:
-    await _start_expense_flow(message, state, services, flow="receive")
+    await _start_expense_flow(message, state, services, flow="expense")
 
 
 @router.message(ExpenseStates.waiting_for_amount)
 async def expense_amount(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    flow = str(data.get("flow", "expense"))
     try:
-        amount_minor = parse_amount_to_minor(message.text or "")
+        amount_minor = parse_amount_to_minor(
+            message.text or "",
+            allow_negative=flow == "expense",
+        )
     except ValueError as exc:
         await message.answer(str(exc))
         return
 
-    await state.update_data(amount_minor=amount_minor)
+    resolved_flow = flow
+    converted_from_negative = False
+    if flow == "expense" and amount_minor < 0:
+        resolved_flow = "send"
+        converted_from_negative = True
+        amount_minor = abs(amount_minor)
+
+    await state.update_data(
+        amount_minor=amount_minor,
+        resolved_flow=resolved_flow,
+        converted_from_negative=converted_from_negative,
+    )
     await state.set_state(ExpenseStates.waiting_for_description)
-    await message.answer("Введите описание траты.")
+    await message.answer(
+        "Введите описание или выберите категорию.",
+        reply_markup=description_keyboard(),
+    )
 
 
 @router.message(ExpenseStates.waiting_for_description)
-async def expense_description(message: Message, state: FSMContext) -> None:
+async def expense_description(message: Message, state: FSMContext, services: ServiceContainer) -> None:
     description = (message.text or "").strip()
     if not description:
-        await message.answer("Описание не должно быть пустым.")
+        await message.answer("Можно ввести текст или выбрать категорию с клавиатуры.")
         return
+
+    if description == "Без описания":
+        description = ""
 
     await state.update_data(description=description)
-    await state.set_state(ExpenseStates.waiting_for_currency)
-    await message.answer("Выберите валюту.", reply_markup=currency_keyboard())
-
-
-@router.message(ExpenseStates.waiting_for_currency)
-async def expense_currency(message: Message, state: FSMContext, services: ServiceContainer) -> None:
-    try:
-        currency = validate_currency(message.text or "")
-    except ValueError as exc:
-        await message.answer(str(exc), reply_markup=currency_keyboard())
-        return
-
-    await state.update_data(currency=currency)
     data = await state.get_data()
     user = await services.users.ensure_user(message.from_user)
     pair = await services.pairs.get_selected_pair_for_user(user["id"])
@@ -114,13 +143,16 @@ async def expense_currency(message: Message, state: FSMContext, services: Servic
             reply_markup=main_menu_keyboard(),
         )
         return
+
     pair_members = await services.pairs.get_pair_members(pair["id"])
     counterpart = services.pairs.get_counterparty_display_data(pair_members, user["id"])
     counterpart_name = services.users.display_name(counterpart)
-    flow = str(data.get("flow", "receive"))
+    currency = services.users.get_default_currency(user)
+    resolved_flow = str(data.get("resolved_flow", "expense"))
+    action = "send_money" if resolved_flow == "send" else "receive_money"
     await message.answer(
-        _draft_preview(data, counterpart_name, flow),
-        reply_markup=draft_confirmation_keyboard("send_money" if flow == "send" else "receive_money"),
+        _draft_preview(data, counterpart_name, currency),
+        reply_markup=draft_confirmation_keyboard(action),
     )
 
 
@@ -156,23 +188,27 @@ async def submit_receive_money(
         await callback.answer("Пара еще не активна", show_alert=True)
         return
 
+    currency = services.users.get_default_currency(user)
     tx = await services.transactions.create_expense(
         pair_row=pair,
-        currency=str(data["currency"]),
+        currency=currency,
         created_by_user_id=user["id"],
         counterparty_user_id=counterparty_id,
         amount_minor=int(data["amount_minor"]),
         description=str(data["description"]),
     )
-    await _notify_counterparty(
-        bot=bot,
-        services=services,
-        tx=tx,
-        action_label="добавил(а) трату",
-    )
+
+    if services.pairs.is_counterparty_trusted(pair, user["id"]):
+        tx = await services.transactions.accept(tx["id"], counterparty_id)
+        await _notify_counterparty_autoaccepted_expense(bot=bot, services=services, tx=tx)
+        author_message = "Трата автоматически подтверждена, потому что в этой паре включено доверие."
+    else:
+        await _notify_counterparty_pending_expense(bot=bot, services=services, tx=tx)
+        author_message = "Запрос отправлен второй стороне."
+
     await state.clear()
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer("Запрос отправлен второй стороне.", reply_markup=main_menu_keyboard())
+    await callback.message.answer(author_message, reply_markup=main_menu_keyboard())
     await callback.answer()
 
 
@@ -208,37 +244,53 @@ async def submit_send_money(
         await callback.answer("Пара еще не активна", show_alert=True)
         return
 
+    currency = services.users.get_default_currency(user)
     tx = await services.transactions.create_settlement_accepted(
         pair_row=pair,
-        currency=str(data["currency"]),
+        currency=currency,
         created_by_user_id=user["id"],
         counterparty_user_id=counterparty_id,
         amount_minor=int(data["amount_minor"]),
         description=str(data["description"]),
     )
-    await _notify_counterparty_transfer(
-        bot=bot,
-        services=services,
-        tx=tx,
-    )
+    await _notify_counterparty_transfer(bot=bot, services=services, tx=tx)
     await state.clear()
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer("Перевод зафиксирован и вторая сторона уведомлена.", reply_markup=main_menu_keyboard())
+    await callback.message.answer(
+        "Перевод зафиксирован и вторая сторона уведомлена.",
+        reply_markup=main_menu_keyboard(),
+    )
     await callback.answer()
 
 
-async def _notify_counterparty(bot: Bot, services: ServiceContainer, tx, action_label: str) -> None:
+async def _notify_counterparty_pending_expense(bot: Bot, services: ServiceContainer, tx) -> None:
     author = await services.users.get_by_id(tx["created_by_user_id"])
     counterparty = await services.users.get_by_id(tx["counterparty_user_id"])
     author_name = services.users.display_name(author)
     await bot.send_message(
         counterparty["telegram_id"],
         (
-            f"{author_name} {action_label}.\n"
+            f"{author_name} добавил(а) трату.\n"
             f"Сумма: {format_minor_amount(tx['amount_minor'], tx['currency'])}\n"
             f"Описание: {tx['description'] or 'Без описания'}"
         ),
         reply_markup=pending_transaction_keyboard(tx["id"]),
+    )
+
+
+async def _notify_counterparty_autoaccepted_expense(bot: Bot, services: ServiceContainer, tx) -> None:
+    author = await services.users.get_by_id(tx["created_by_user_id"])
+    counterparty = await services.users.get_by_id(tx["counterparty_user_id"])
+    author_name = services.users.display_name(author)
+    await bot.send_message(
+        counterparty["telegram_id"],
+        (
+            f"{author_name} добавил(а) трату.\n"
+            f"Сумма: {format_minor_amount(tx['amount_minor'], tx['currency'])}\n"
+            f"Описание: {tx['description'] or 'Без описания'}\n"
+            "Операция подтверждена автоматически, потому что для этой пары включено доверие."
+        ),
+        reply_markup=main_menu_keyboard(),
     )
 
 

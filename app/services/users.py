@@ -3,6 +3,7 @@ from __future__ import annotations
 from aiogram.types import User as TelegramUser
 
 from app.db import Database
+from app.utils import validate_currency
 from app.utils import now_iso
 
 
@@ -43,6 +44,16 @@ class UserService:
             "SELECT * FROM users WHERE id = ?",
             (user_id,),
         )
+
+    async def set_default_currency(self, user_id: int, currency: str) -> None:
+        validated_currency = validate_currency(currency)
+        await self.db.execute(
+            "UPDATE users SET default_currency = ? WHERE id = ?",
+            (validated_currency, user_id),
+        )
+
+    def get_default_currency(self, user_row) -> str:
+        return user_row["default_currency"] or "RUB"
 
     @staticmethod
     def display_name(user_row) -> str:

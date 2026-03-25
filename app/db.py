@@ -76,6 +76,8 @@ class Database:
             for statement in CREATE_STATEMENTS:
                 await connection.execute(statement)
             await self._migrate_users_active_pair(connection)
+            await self._migrate_user_default_currency(connection)
+            await self._migrate_pair_trust(connection)
             await connection.commit()
 
     async def fetchone(self, query: str, params: tuple[Any, ...] = ()) -> aiosqlite.Row | None:
@@ -123,3 +125,33 @@ class Database:
             WHERE active_pair_id IS NULL
             """
         )
+
+    async def _migrate_user_default_currency(self, connection: aiosqlite.Connection) -> None:
+        async with connection.execute("PRAGMA table_info(users)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+
+        if "default_currency" not in columns:
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN default_currency TEXT NOT NULL DEFAULT 'RUB'"
+            )
+
+        await connection.execute(
+            """
+            UPDATE users
+            SET default_currency = 'RUB'
+            WHERE default_currency IS NULL OR default_currency = ''
+            """
+        )
+
+    async def _migrate_pair_trust(self, connection: aiosqlite.Connection) -> None:
+        async with connection.execute("PRAGMA table_info(pairs)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+
+        if "trust_user1_to_user2" not in columns:
+            await connection.execute(
+                "ALTER TABLE pairs ADD COLUMN trust_user1_to_user2 INTEGER NOT NULL DEFAULT 0"
+            )
+        if "trust_user2_to_user1" not in columns:
+            await connection.execute(
+                "ALTER TABLE pairs ADD COLUMN trust_user2_to_user1 INTEGER NOT NULL DEFAULT 0"
+            )

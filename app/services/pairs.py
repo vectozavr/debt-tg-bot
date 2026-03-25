@@ -91,6 +91,31 @@ class PairService:
         )
         return pair
 
+    async def set_trust_for_user(self, pair_id: int, user_id: int, enabled: bool):
+        pair = await self.get_by_id(pair_id)
+        if not pair:
+            raise ValueError("Пара не найдена")
+
+        if pair["user1_id"] == user_id:
+            column = "trust_user1_to_user2"
+        elif pair["user2_id"] == user_id:
+            column = "trust_user2_to_user1"
+        else:
+            raise ValueError("Эта пара вам недоступна")
+
+        await self.db.execute(
+            f"UPDATE pairs SET {column} = ? WHERE id = ?",
+            (1 if enabled else 0, pair_id),
+        )
+        return await self.get_by_id(pair_id)
+
+    def is_counterparty_trusted(self, pair_row, author_user_id: int) -> bool:
+        if pair_row["user1_id"] == author_user_id:
+            return bool(pair_row["trust_user2_to_user1"])
+        if pair_row["user2_id"] == author_user_id:
+            return bool(pair_row["trust_user1_to_user2"])
+        return False
+
     async def get_pending_pair_by_owner(self, user_id: int):
         return await self.db.fetchone(
             """
