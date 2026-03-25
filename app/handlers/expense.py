@@ -19,16 +19,29 @@ class ExpenseStates(StatesGroup):
     waiting_for_currency = State()
 
 
-def _draft_preview(data: dict[str, str | int], recipient_name: str) -> str:
+def _draft_preview(data: dict[str, str | int], recipient_name: str, flow: str) -> str:
+    if flow == "send":
+        title = "Проверьте отправку:"
+        recipient_line = f"Кому уйдут деньги: {recipient_name}"
+    else:
+        title = "Проверьте запрос на получение:"
+        recipient_line = f"Кому уйдет запрос: {recipient_name}"
+
     return (
-        "Проверьте трату:\n"
-        f"Кому уйдет запрос: {recipient_name}\n"
+        f"{title}\n"
+        f"{recipient_line}\n"
         f"Сумма: {format_minor_amount(int(data['amount_minor']), str(data['currency']))}\n"
         f"Описание: {data['description']}"
     )
 
 
-async def _start_expense_flow(message: Message, state: FSMContext, services: ServiceContainer) -> None:
+async def _start_expense_flow(
+    message: Message,
+    state: FSMContext,
+    services: ServiceContainer,
+    *,
+    flow: str,
+) -> None:
     user = await services.users.ensure_user(message.from_user)
     pair = await services.pairs.get_selected_pair_for_user(user["id"])
     if not pair:
@@ -39,15 +52,22 @@ async def _start_expense_flow(message: Message, state: FSMContext, services: Ser
         return
 
     await state.clear()
+    await state.update_data(flow=flow)
     await state.set_state(ExpenseStates.waiting_for_amount)
     await message.answer("Введите сумму, например: 25.50", reply_markup=main_menu_keyboard())
 
 
 @router.message(Command("send"))
+@router.message(F.text == "Отправить")
+async def start_send_money(message: Message, state: FSMContext, services: ServiceContainer) -> None:
+    await _start_expense_flow(message, state, services, flow="send")
+
+
 @router.message(Command(commands=["recieve", "receive"]))
+@router.message(F.text == "Получить")
 @router.message(F.text == "Добавить трату")
-async def start_expense(message: Message, state: FSMContext, services: ServiceContainer) -> None:
-    await _start_expense_flow(message, state, services)
+async def start_receive_money(message: Message, state: FSMContext, services: ServiceContainer) -> None:
+    await _start_expense_flow(message, state, services, flow="receive")
 
 
 @router.message(ExpenseStates.waiting_for_amount)
@@ -97,14 +117,15 @@ async def expense_currency(message: Message, state: FSMContext, services: Servic
     pair_members = await services.pairs.get_pair_members(pair["id"])
     counterpart = services.pairs.get_counterparty_display_data(pair_members, user["id"])
     counterpart_name = services.users.display_name(counterpart)
+    flow = str(data.get("flow", "receive"))
     await message.answer(
-        _draft_preview(data, counterpart_name),
-        reply_markup=draft_confirmation_keyboard("expense"),
+        _draft_preview(data, counterpart_name, flow),
+        reply_markup=draft_confirmation_keyboard("send_money" if flow == "send" else "receive_money"),
     )
 
 
-@router.callback_query(F.data == "draft:submit:expense")
-async def submit_expense(
+@router.callback_query(F.data == "draft:submit:receive_money")
+async def submit_receive_money(
     callback: CallbackQuery,
     state: FSMContext,
     services: ServiceContainer,
@@ -155,6 +176,57 @@ async def submit_expense(
     await callback.answer()
 
 
+@router.callback_query(F.data == "draft:submit:send_money")
+async def submit_send_money(
+    callback: CallbackQuery,
+    state: FSMContext,
+    services: ServiceContainer,
+    bot: Bot,
+) -> None:
+    if not callback.message or not callback.from_user:
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    if not data:
+        await callback.answer("Черновик не найден", show_alert=True)
+        return
+
+    user = await services.users.ensure_user(callback.from_user)
+    pair = await services.pairs.get_selected_pair_for_user(user["id"])
+    if not pair:
+        await state.clear()
+        await callback.message.answer(
+            "У вас нет выбранной пары. Используйте /switch.",
+            reply_markup=main_menu_keyboard(),
+        )
+        await callback.answer()
+        return
+
+    counterparty_id = await services.pairs.get_counterparty_id(pair, user["id"])
+    if not counterparty_id:
+        await callback.answer("Пара еще не активна", show_alert=True)
+        return
+
+    tx = await services.transactions.create_settlement_accepted(
+        pair_row=pair,
+        currency=str(data["currency"]),
+        created_by_user_id=user["id"],
+        counterparty_user_id=counterparty_id,
+        amount_minor=int(data["amount_minor"]),
+        description=str(data["description"]),
+    )
+    await _notify_counterparty_transfer(
+        bot=bot,
+        services=services,
+        tx=tx,
+    )
+    await state.clear()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Перевод зафиксирован и вторая сторона уведомлена.", reply_markup=main_menu_keyboard())
+    await callback.answer()
+
+
 async def _notify_counterparty(bot: Bot, services: ServiceContainer, tx, action_label: str) -> None:
     author = await services.users.get_by_id(tx["created_by_user_id"])
     counterparty = await services.users.get_by_id(tx["counterparty_user_id"])
@@ -167,6 +239,20 @@ async def _notify_counterparty(bot: Bot, services: ServiceContainer, tx, action_
             f"Описание: {tx['description'] or 'Без описания'}"
         ),
         reply_markup=pending_transaction_keyboard(tx["id"]),
+    )
+
+
+async def _notify_counterparty_transfer(bot: Bot, services: ServiceContainer, tx) -> None:
+    author = await services.users.get_by_id(tx["created_by_user_id"])
+    counterparty = await services.users.get_by_id(tx["counterparty_user_id"])
+    author_name = services.users.display_name(author)
+    await bot.send_message(
+        counterparty["telegram_id"],
+        (
+            f"{author_name} отправил(а) вам {format_minor_amount(tx['amount_minor'], tx['currency'])}.\n"
+            f"Описание: {tx['description'] or 'Без описания'}"
+        ),
+        reply_markup=main_menu_keyboard(),
     )
 
 

@@ -8,7 +8,8 @@ from app.utils import SUPPORTED_CURRENCIES
 
 MAIN_MENU_BUTTONS = (
     "Баланс",
-    "Добавить трату",
+    "Получить",
+    "Отправить",
     "История",
 )
 
@@ -17,7 +18,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     for title in MAIN_MENU_BUTTONS:
         builder.add(KeyboardButton(text=title))
-    builder.adjust(2, 1)
+    builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
 
 
