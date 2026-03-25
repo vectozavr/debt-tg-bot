@@ -19,9 +19,10 @@ class ExpenseStates(StatesGroup):
     waiting_for_currency = State()
 
 
-def _draft_preview(data: dict[str, str | int]) -> str:
+def _draft_preview(data: dict[str, str | int], recipient_name: str) -> str:
     return (
         "Проверьте трату:\n"
+        f"Кому уйдет запрос: {recipient_name}\n"
         f"Сумма: {format_minor_amount(int(data['amount_minor']), str(data['currency']))}\n"
         f"Описание: {data['description']}"
     )
@@ -75,7 +76,7 @@ async def expense_description(message: Message, state: FSMContext) -> None:
 
 
 @router.message(ExpenseStates.waiting_for_currency)
-async def expense_currency(message: Message, state: FSMContext) -> None:
+async def expense_currency(message: Message, state: FSMContext, services: ServiceContainer) -> None:
     try:
         currency = validate_currency(message.text or "")
     except ValueError as exc:
@@ -84,8 +85,20 @@ async def expense_currency(message: Message, state: FSMContext) -> None:
 
     await state.update_data(currency=currency)
     data = await state.get_data()
+    user = await services.users.ensure_user(message.from_user)
+    pair = await services.pairs.get_selected_pair_for_user(user["id"])
+    if not pair:
+        await state.clear()
+        await message.answer(
+            "У вас нет выбранной пары. Используйте /switch.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    pair_members = await services.pairs.get_pair_members(pair["id"])
+    counterpart = services.pairs.get_counterparty_display_data(pair_members, user["id"])
+    counterpart_name = services.users.display_name(counterpart)
     await message.answer(
-        _draft_preview(data),
+        _draft_preview(data, counterpart_name),
         reply_markup=draft_confirmation_keyboard("expense"),
     )
 
@@ -130,7 +143,6 @@ async def submit_expense(
         amount_minor=int(data["amount_minor"]),
         description=str(data["description"]),
     )
-    counterparty = await services.users.get_by_id(counterparty_id)
     await _notify_counterparty(
         bot=bot,
         services=services,

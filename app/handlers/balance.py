@@ -24,8 +24,6 @@ async def show_balance(message: Message, services: ServiceContainer) -> None:
         return
 
     pair_members = await services.pairs.get_pair_members(pair["id"])
-    counterpart = services.pairs.get_counterparty_display_data(pair_members, user["id"])
-    counterpart_name = services.users.display_name(counterpart)
     user1_name = services.users.display_name(
         {
             "first_name": pair_members["user1_first_name"],
@@ -42,13 +40,10 @@ async def show_balance(message: Message, services: ServiceContainer) -> None:
     )
     balances = await services.balances.get_pair_balances(pair["id"])
     if not balances:
-        await message.answer(
-            f"Текущая пара: {counterpart_name}\nБаланс нулевой.",
-            reply_markup=main_menu_keyboard(),
-        )
+        await message.answer("Баланс нулевой.", reply_markup=main_menu_keyboard())
         return
 
-    lines: list[str] = [f"Текущая пара: {counterpart_name}"]
+    lines: list[str] = []
     for row in balances:
         balance_minor = row["balance_minor"]
         if balance_minor > 0:
