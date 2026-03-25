@@ -8,9 +8,9 @@ from app.utils import SUPPORTED_CURRENCIES
 
 MAIN_MENU_BUTTONS = (
     "Баланс",
-    "Получить",
     "Отправить",
     "История",
+    "Получить",
 )
 
 
