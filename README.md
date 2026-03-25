@@ -13,7 +13,7 @@
 
 ## Функции MVP
 
-- одна активная пара на пользователя
+- несколько пар на пользователя с выбором текущей через `/switch`
 - только пары из двух человек
 - валюты: `SAR`, `USD`, `AED`, `LARI`, `LIRA`, `RUB`
 - траты и погашения создаются как `pending`, затем переходят в `accepted` или `rejected`
@@ -44,11 +44,31 @@ python3 -m app.bot
 
 Если `BOT_TOKEN` не задан, инициализация БД и импорт проекта работают, но long polling не стартует.
 
+## Очистка базы после тестов
+
+```bash
+python3 scripts/reset_db.py
+```
+
+Без подтверждения:
+
+```bash
+python3 scripts/reset_db.py --yes
+```
+
+Для другой базы:
+
+```bash
+python3 scripts/reset_db.py --db /tmp/test_bot.db --yes
+```
+
 ## Команды
 
 - `/start`
 - `/help`
 - `/pair`
+- `/join`
+- `/switch`
 - `/balance`
 - `/history`
 - `/send`

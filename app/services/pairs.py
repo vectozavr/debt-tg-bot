@@ -8,15 +8,88 @@ class PairService:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    async def get_active_pair_for_user(self, user_id: int):
-        return await self.db.fetchone(
+    async def get_selected_pair_for_user(self, user_id: int):
+        user = await self.db.fetchone(
+            "SELECT active_pair_id FROM users WHERE id = ?",
+            (user_id,),
+        )
+        if not user:
+            return None
+
+        active_pair_id = user["active_pair_id"]
+        if active_pair_id is not None:
+            pair = await self.db.fetchone(
+                """
+                SELECT * FROM pairs
+                WHERE id = ? AND status = 'active' AND (user1_id = ? OR user2_id = ?)
+                """,
+                (active_pair_id, user_id, user_id),
+            )
+            if pair:
+                return pair
+
+        fallback_pair = await self.db.fetchone(
             """
             SELECT * FROM pairs
             WHERE status = 'active' AND (user1_id = ? OR user2_id = ?)
+            ORDER BY id
             LIMIT 1
             """,
             (user_id, user_id),
         )
+        if fallback_pair:
+            await self.set_active_pair_for_user(user_id, fallback_pair["id"])
+        return fallback_pair
+
+    async def get_active_pair_for_user(self, user_id: int):
+        return await self.get_selected_pair_for_user(user_id)
+
+    async def list_active_pairs_for_user(self, user_id: int):
+        return await self.db.fetchall(
+            """
+            SELECT
+                p.*,
+                CASE
+                    WHEN p.user1_id = ? THEN u2.id
+                    ELSE u1.id
+                END AS counterpart_id,
+                CASE
+                    WHEN p.user1_id = ? THEN u2.telegram_id
+                    ELSE u1.telegram_id
+                END AS counterpart_telegram_id,
+                CASE
+                    WHEN p.user1_id = ? THEN u2.username
+                    ELSE u1.username
+                END AS counterpart_username,
+                CASE
+                    WHEN p.user1_id = ? THEN u2.first_name
+                    ELSE u1.first_name
+                END AS counterpart_first_name
+            FROM pairs p
+            JOIN users u1 ON u1.id = p.user1_id
+            JOIN users u2 ON u2.id = p.user2_id
+            WHERE p.status = 'active' AND (p.user1_id = ? OR p.user2_id = ?)
+            ORDER BY p.id DESC
+            """,
+            (user_id, user_id, user_id, user_id, user_id, user_id),
+        )
+
+    async def set_active_pair_for_user(self, user_id: int, pair_id: int):
+        pair = await self.db.fetchone(
+            """
+            SELECT * FROM pairs
+            WHERE id = ? AND status = 'active' AND (user1_id = ? OR user2_id = ?)
+            """,
+            (pair_id, user_id, user_id),
+        )
+        if not pair:
+            raise ValueError("Эта пара вам недоступна")
+
+        await self.db.execute(
+            "UPDATE users SET active_pair_id = ? WHERE id = ?",
+            (pair_id, user_id),
+        )
+        return pair
 
     async def get_pending_pair_by_owner(self, user_id: int):
         return await self.db.fetchone(
@@ -42,14 +115,6 @@ class PairService:
         )
 
     async def create_pair(self, user_id: int):
-        active_pair = await self.get_active_pair_for_user(user_id)
-        if active_pair:
-            raise ValueError("У вас уже есть активная пара")
-
-        pending_pair = await self.get_pending_pair_by_owner(user_id)
-        if pending_pair:
-            return pending_pair
-
         invite_code = await self._generate_unique_code()
         pair_id = await self.db.execute(
             """
@@ -61,10 +126,6 @@ class PairService:
         return await self.get_by_id(pair_id)
 
     async def join_pair(self, user_id: int, invite_code: str):
-        active_pair = await self.get_active_pair_for_user(user_id)
-        if active_pair:
-            raise ValueError("У вас уже есть активная пара")
-
         pair = await self.get_by_invite_code(invite_code)
         if not pair:
             raise ValueError("Код пары не найден")
@@ -72,10 +133,6 @@ class PairService:
             raise ValueError("Эта пара уже активирована")
         if pair["user1_id"] == user_id:
             raise ValueError("Нельзя создать пару с самим собой")
-
-        owner_active_pair = await self.get_active_pair_for_user(pair["user1_id"])
-        if owner_active_pair:
-            raise ValueError("У создателя уже есть активная пара")
 
         await self.db.execute(
             """
@@ -85,6 +142,8 @@ class PairService:
             """,
             (user_id, pair["id"]),
         )
+        await self._set_active_pair_if_missing(user_id, pair["id"])
+        await self._set_active_pair_if_missing(pair["user1_id"], pair["id"])
         return await self.get_by_id(pair["id"])
 
     async def get_pair_members(self, pair_id: int):
@@ -112,6 +171,32 @@ class PairService:
         if pair_row["user2_id"] == user_id:
             return pair_row["user1_id"]
         return None
+
+    def get_counterparty_display_data(self, pair_members, user_id: int) -> dict[str, int | str | None]:
+        if pair_members["user1_id"] == user_id:
+            return {
+                "id": pair_members["user2_id"],
+                "telegram_id": pair_members["user2_telegram_id"],
+                "username": pair_members["user2_username"],
+                "first_name": pair_members["user2_first_name"],
+            }
+        return {
+            "id": pair_members["user1_id"],
+            "telegram_id": pair_members["user1_telegram_id"],
+            "username": pair_members["user1_username"],
+            "first_name": pair_members["user1_first_name"],
+        }
+
+    async def _set_active_pair_if_missing(self, user_id: int, pair_id: int) -> None:
+        user = await self.db.fetchone(
+            "SELECT active_pair_id FROM users WHERE id = ?",
+            (user_id,),
+        )
+        if user and user["active_pair_id"] is None:
+            await self.db.execute(
+                "UPDATE users SET active_pair_id = ? WHERE id = ?",
+                (pair_id, user_id),
+            )
 
     async def _generate_unique_code(self) -> str:
         while True:

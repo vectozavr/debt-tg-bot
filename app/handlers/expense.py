@@ -29,9 +29,12 @@ def _draft_preview(data: dict[str, str | int]) -> str:
 
 async def _start_expense_flow(message: Message, state: FSMContext, services: ServiceContainer) -> None:
     user = await services.users.ensure_user(message.from_user)
-    pair = await services.pairs.get_active_pair_for_user(user["id"])
+    pair = await services.pairs.get_selected_pair_for_user(user["id"])
     if not pair:
-        await message.answer("Нельзя добавить расход без активной пары.", reply_markup=main_menu_keyboard())
+        await message.answer(
+            "Нельзя добавить расход без выбранной пары. Используйте /pair, /join или /switch.",
+            reply_markup=main_menu_keyboard(),
+        )
         return
 
     await state.clear()
@@ -104,10 +107,13 @@ async def submit_expense(
         return
 
     user = await services.users.ensure_user(callback.from_user)
-    pair = await services.pairs.get_active_pair_for_user(user["id"])
+    pair = await services.pairs.get_selected_pair_for_user(user["id"])
     if not pair:
         await state.clear()
-        await callback.message.answer("У вас нет активной пары.", reply_markup=main_menu_keyboard())
+        await callback.message.answer(
+            "У вас нет выбранной пары. Используйте /switch.",
+            reply_markup=main_menu_keyboard(),
+        )
         await callback.answer()
         return
 

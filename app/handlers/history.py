@@ -15,17 +15,26 @@ router = Router()
 @router.message(F.text == "История")
 async def show_history(message: Message, services: ServiceContainer) -> None:
     user = await services.users.ensure_user(message.from_user)
-    pair = await services.pairs.get_active_pair_for_user(user["id"])
+    pair = await services.pairs.get_selected_pair_for_user(user["id"])
     if not pair:
-        await message.answer("У вас нет активной пары.", reply_markup=main_menu_keyboard())
+        await message.answer(
+            "У вас нет выбранной пары. Используйте /pair, /join или /switch.",
+            reply_markup=main_menu_keyboard(),
+        )
         return
 
+    pair_members = await services.pairs.get_pair_members(pair["id"])
+    counterpart = services.pairs.get_counterparty_display_data(pair_members, user["id"])
+    counterpart_name = services.users.display_name(counterpart)
     transactions = await services.transactions.list_recent_for_pair(pair["id"])
     if not transactions:
-        await message.answer("История пока пустая.", reply_markup=main_menu_keyboard())
+        await message.answer(
+            f"Текущая пара: {counterpart_name}\nИстория пока пустая.",
+            reply_markup=main_menu_keyboard(),
+        )
         return
 
-    lines = ["Последние операции:"]
+    lines = [f"Текущая пара: {counterpart_name}", "", "Последние операции:"]
     for tx in transactions:
         author_name = services.users.display_name(
             {

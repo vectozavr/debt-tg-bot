@@ -7,13 +7,9 @@ from app.utils import SUPPORTED_CURRENCIES
 
 
 MAIN_MENU_BUTTONS = (
-    "Создать пару",
-    "Ввести код пары",
     "Баланс",
     "Добавить трату",
     "История",
-    "Погашение",
-    "Помощь",
 )
 
 
@@ -21,7 +17,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     for title in MAIN_MENU_BUTTONS:
         builder.add(KeyboardButton(text=title))
-    builder.adjust(2, 2, 2, 1)
+    builder.adjust(2, 1)
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -49,4 +45,26 @@ def draft_confirmation_keyboard(action: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="Подтвердить", callback_data=f"draft:submit:{action}"),
         InlineKeyboardButton(text="Отменить", callback_data=f"draft:cancel:{action}"),
     )
+    return builder.as_markup()
+
+
+def switch_pair_keyboard(pairs, current_pair_id: int | None) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for pair in pairs:
+        if pair["counterpart_first_name"]:
+            label = pair["counterpart_first_name"]
+        elif pair["counterpart_username"]:
+            label = f"@{pair['counterpart_username']}"
+        else:
+            label = str(pair["counterpart_telegram_id"])
+
+        if pair["id"] == current_pair_id:
+            label = f"• {label}"
+
+        builder.row(
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"pair:switch:{pair['id']}",
+            )
+        )
     return builder.as_markup()

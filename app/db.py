@@ -75,6 +75,7 @@ class Database:
         async with self.connection() as connection:
             for statement in CREATE_STATEMENTS:
                 await connection.execute(statement)
+            await self._migrate_users_active_pair(connection)
             await connection.commit()
 
     async def fetchone(self, query: str, params: tuple[Any, ...] = ()) -> aiosqlite.Row | None:
@@ -98,3 +99,27 @@ class Database:
             for query, params in statements:
                 await connection.execute(query, params)
             await connection.commit()
+
+    async def _migrate_users_active_pair(self, connection: aiosqlite.Connection) -> None:
+        async with connection.execute("PRAGMA table_info(users)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+
+        if "active_pair_id" not in columns:
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN active_pair_id INTEGER"
+            )
+
+        await connection.execute(
+            """
+            UPDATE users
+            SET active_pair_id = (
+                SELECT p.id
+                FROM pairs p
+                WHERE p.status = 'active'
+                  AND (p.user1_id = users.id OR p.user2_id = users.id)
+                ORDER BY p.id
+                LIMIT 1
+            )
+            WHERE active_pair_id IS NULL
+            """
+        )
