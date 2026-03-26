@@ -60,6 +60,29 @@ def evaluate_amount_expression(raw_amount: str) -> Decimal:
         raise ValueError("Не удалось распознать выражение. Пример: 35/2 + 12 - 5") from exc
 
 
+def uses_amount_formula(raw_amount: str) -> bool:
+    normalized = raw_amount.strip().replace(",", ".")
+    if not normalized:
+        return False
+
+    try:
+        parsed = ast.parse(normalized, mode="eval")
+    except SyntaxError:
+        return False
+
+    body = parsed.body
+    if isinstance(body, ast.Constant) and isinstance(body.value, (int, float)):
+        return False
+    if (
+        isinstance(body, ast.UnaryOp)
+        and isinstance(body.op, (ast.UAdd, ast.USub))
+        and isinstance(body.operand, ast.Constant)
+        and isinstance(body.operand.value, (int, float))
+    ):
+        return False
+    return True
+
+
 def parse_amount_to_minor(
     raw_amount: str,
     *,

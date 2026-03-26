@@ -13,7 +13,7 @@ from app.keyboards import (
     pending_transaction_keyboard,
 )
 from app.services import ServiceContainer
-from app.utils import format_minor_amount, parse_amount_to_minor
+from app.utils import format_minor_amount, parse_amount_to_minor, uses_amount_formula
 
 router = Router()
 
@@ -21,6 +21,14 @@ router = Router()
 class ExpenseStates(StatesGroup):
     waiting_for_amount = State()
     waiting_for_description = State()
+
+
+def _build_description(description: str, raw_amount: str) -> str:
+    if not uses_amount_formula(raw_amount):
+        return description
+    if description:
+        return f"{description}: {raw_amount}"
+    return raw_amount
 
 
 def _draft_preview(
@@ -94,10 +102,12 @@ async def start_receive_money(message: Message, state: FSMContext, services: Ser
 async def expense_amount(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     flow = str(data.get("flow", "expense"))
+    raw_amount = (message.text or "").strip()
     try:
         amount_minor = parse_amount_to_minor(
-            message.text or "",
+            raw_amount,
             allow_negative=flow == "expense",
+            allow_zero=flow == "expense",
         )
     except ValueError as exc:
         await message.answer(str(exc))
@@ -114,6 +124,7 @@ async def expense_amount(message: Message, state: FSMContext) -> None:
         amount_minor=amount_minor,
         resolved_flow=resolved_flow,
         converted_from_negative=converted_from_negative,
+        raw_amount=raw_amount,
     )
     await state.set_state(ExpenseStates.waiting_for_description)
     await message.answer(
@@ -132,7 +143,9 @@ async def expense_description(message: Message, state: FSMContext, services: Ser
     if description == "Без описания":
         description = ""
 
-    await state.update_data(description=description)
+    data = await state.get_data()
+    full_description = _build_description(description, str(data.get("raw_amount", "")))
+    await state.update_data(description=full_description)
     data = await state.get_data()
     user = await services.users.ensure_user(message.from_user)
     pair = await services.pairs.get_selected_pair_for_user(user["id"])
